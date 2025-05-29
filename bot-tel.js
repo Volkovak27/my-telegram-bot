@@ -36,11 +36,15 @@ const getFilename = (size, codeList) => {
   return `Birthday_freespins_${gameName}_v${size}_crm.csv`;
 };
 
-const userFiles = {}; // для объединения файлов
+const userFiles = {};
+const awaitingPromo = {};
+const awaitingMerge = {};
 
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
   userFiles[chatId] = [];
+  awaitingPromo[chatId] = false;
+  awaitingMerge[chatId] = false;
   bot.sendMessage(chatId, 'Привет! Выберите действие:', {
     reply_markup: {
       keyboard: [
@@ -53,65 +57,26 @@ bot.onText(/\/start/, (msg) => {
   });
 });
 
-const awaitingPromo = {};
-
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
 
   if (msg.text === '🎰 Разделить на фриспины') {
+    awaitingPromo[chatId] = false;
+    awaitingMerge[chatId] = false;
     return bot.sendMessage(chatId, 'Отправь Excel-файл (.xlsx), я разделю его по размеру фриспинов.');
   }
 
   if (msg.text === '📦 Разделить на промокоды') {
     awaitingPromo[chatId] = true;
+    awaitingMerge[chatId] = false;
     return bot.sendMessage(chatId, 'Отправь Excel-файл (.xlsx), я разделю его по промогруппам.');
   }
 
   if (msg.text === '🧩 Объединить файлы') {
     userFiles[chatId] = [];
-    return bot.sendMessage(chatId, 'Отправь CSV-файлы. Когда закончишь — нажми "Завершить объединение".', {
-      reply_markup: {
-        keyboard: [[{ text: 'Завершить объединение' }]],
-        resize_keyboard: true
-      }
-    });
-  }
-
-  if (msg.text === 'Завершить объединение') {
-    if (!userFiles[chatId] || userFiles[chatId].length === 0) {
-      return bot.sendMessage(chatId, 'Ты не отправил ни одного файла.');
-    }
-
-    const groups = {};
-    for (const { filePath, originalName } of userFiles[chatId]) {
-      const prefix = originalName.replace(/\.csv$/i, '').replace(/\s*\(\d+\)$/, '');
-      if (!groups[prefix]) groups[prefix] = [];
-      groups[prefix].push(filePath);
-    }
-
-    const resultFiles = [];
-    for (const [prefix, files] of Object.entries(groups)) {
-      let merged = '';
-      let isFirst = true;
-      files.forEach(filePath => {
-        const lines = fs.readFileSync(filePath, 'utf8').trim().split('\n');
-        if (!lines.length) return;
-        const [header, ...rows] = lines;
-        if (isFirst) {
-          merged += header + '\n';
-          isFirst = false;
-        }
-        merged += rows.join('\n') + '\n';
-      });
-      const outPath = path.join(OUTPUT_DIR, `${prefix}.csv`);
-      fs.writeFileSync(outPath, merged);
-      resultFiles.push(outPath);
-    }
-
-    for (const file of resultFiles) await bot.sendDocument(chatId, file);
-    bot.sendMessage(chatId, 'Готово ✅');
-    userFiles[chatId].forEach(({ filePath }) => fs.existsSync(filePath) && fs.unlinkSync(filePath));
-    userFiles[chatId] = [];
+    awaitingMerge[chatId] = true;
+    awaitingPromo[chatId] = false;
+    return bot.sendMessage(chatId, 'Отправь CSV-файлы для объединения. Объединю, как только получу хотя бы один.');
   }
 });
 
@@ -208,6 +173,42 @@ bot.on('document', async (msg) => {
     const filePath = path.join(TEMP_DIR, `${Date.now()}_${file_name}`);
     fs.writeFileSync(filePath, buffer);
     userFiles[chatId].push({ filePath, originalName: file_name });
-    return bot.sendMessage(chatId, 'Файл получен, жду другие или нажми "Завершить объединение".');
+    bot.sendMessage(chatId, 'Файл получен.');
+
+    if (awaitingMerge[chatId]) {
+      const groups = {};
+      for (const { filePath, originalName } of userFiles[chatId]) {
+        const prefix = originalName.replace(/\.csv$/i, '').replace(/\s*\(\d+\)$/, '');
+        if (!groups[prefix]) groups[prefix] = [];
+        groups[prefix].push(filePath);
+      }
+
+      const resultFiles = [];
+      for (const [prefix, files] of Object.entries(groups)) {
+        let merged = '';
+        let isFirst = true;
+        files.forEach(filePath => {
+          const lines = fs.readFileSync(filePath, 'utf8').trim().split('\n');
+          if (!lines.length) return;
+          const [header, ...rows] = lines;
+          if (isFirst) {
+            merged += header + '\n';
+            isFirst = false;
+          }
+          merged += rows.join('\n') + '\n';
+        });
+        const outPath = path.join(OUTPUT_DIR, `${prefix}.csv`);
+        fs.writeFileSync(outPath, merged);
+        resultFiles.push(outPath);
+      }
+
+      for (const file of resultFiles) await bot.sendDocument(chatId, file);
+      bot.sendMessage(chatId, 'Готово ✅');
+      userFiles[chatId].forEach(({ filePath }) => fs.existsSync(filePath) && fs.unlinkSync(filePath));
+      userFiles[chatId] = [];
+      awaitingMerge[chatId] = false;
+    }
+
+    return;
   }
 });
